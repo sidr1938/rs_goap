@@ -1,0 +1,1 @@
+for<'a, 'b, 'c, 'd, 'e> fn(Agent<'a>, &'b TargetNode<'c>, &'d World<'e>) -> &Option<&Data> {Agent::<'_>::locality_check}

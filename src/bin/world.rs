@@ -1,44 +1,63 @@
-use goap::{Agent, HasStates, World, targ, cond, CostType, Eval, action_meta, Extract};
-use goap::action_builders::*;
+use goap::{Agent, HasStates, Shared, targ, cond};
+use goap::action_handler::action_builders::*;
 use goap::GoalConditions::*;
-use goap::type_conversions::{ToTyp, TypToPrim};
+use goap::response_curves::{ResponseCurve};
+use goap::poly_type::type_conversions::{ToTyp, TypToPrim};
+
 
 fn main() {
 
     // States contain information about the world or the agent, like custom variables
-    let mut world: World =  World::initialize();
-    world.state("GLOBAL: fruit", 100i64);
-
+    let mut world: Shared =  Shared::initialize();
+    world.state("fruit", 5i32);
     let mut agent: Agent = Agent::initialize();
-
     // Initialize some states (kinda like mini variables)
-    agent.state("hunger", 80i32);
-    agent.state("food", 0i32);
-    agent.state("tired", 0i32);
+    agent.state("hunger", 20i32);
+    agent.state("food", 10i32);
+    agent.state("tired", 20i32);
 
 
     // First goal will be the default goal
+    // Part of the preset functions
+    // The min value is the x value where the function reaches its minimum-
+    // it is used to help reduce load in the planning phase to figure out what minimizes the function
+    // however for simple functions it should be determined automatically (by you in the response curve script)
 
-    // cond goals happen when the condition is true, they help to make targ states more appealing or not appealing to the agent
-    // they are only active when calculating the priority goal, not when minimizing
-    // targ goals activate when the condition is false
-    agent.goal("REPLENISH", 1.0, vec![
-        cond("food", l, 20i32, 2.0),
-        targ("food", g, 80i32, 1.0),
-        targ("hunger", l, 50i32, 0.5),
-        targ("tired", l, 60i32, 1.0)
+
+    fn linear_a<T, U>(lo: T, hi: U) -> (ResponseCurve, T, U) {
+        (ResponseCurve::linear(1.0,1.0,1.0), lo, hi)
+    }
+    fn linear_b<T, U>(lo: T, hi: U) -> (ResponseCurve, T, U) {
+        (ResponseCurve::linear(0.5,1.0,1.0), lo, hi)
+    }
+    fn poly_a<T, U>(lo: T, hi: U) -> (ResponseCurve, T, U) {
+        (ResponseCurve::polynomial(0.0,-1.8,4.0, 0.8, 1.0), lo, hi)
+    }
+
+    fn poly_b<T, U>(hi: T, lo: U) -> (ResponseCurve, T, U) {
+        (ResponseCurve::polynomial(1.0,-1.8,5.0, 1.0, 0.0), hi, lo)
+    }
+
+    // condition directives are not minimized, only used for planning the goal
+    // (matters least eg: dont care, matters most eg: aim for) for the linear function
+
+    agent.goal("FARM", 1.0, vec![
+        // if fruit is alot, then we want to replenish
+        targ("food", poly_b(5,30),1.0),
+        targ("fruit", linear_a(50, 0), 1.0)
     ]);
+    // hi: really need to do / must do / good idea
+    // lo: dont need to do / should not do / bad idea
 
     // Actions
 
-    //_dyn _eval fields will be updated during planing or if the state is changed, but you can also
+    // _dyn _eval fields will be updated during planing or if the state is changed, but you can also
     // use a static value with _val, it also helps with performance [ best (_val > _eval > _dyn) worst ]
     agent.action(
         "eat",
         cost_dyn(|agent| { if agent.f64("food") < 10.0 { 20.0 } else { 10.0 } }),
         vec![
-            req_val("food", g, 0i32),
-            req_val("food", nle, 0i32)
+            req_val("food", g, 0),
         ],
         vec![
             // dynamic stuff that updates while the planner is simulating routes
@@ -50,13 +69,27 @@ fn main() {
         "forage",
         cost_val(10.0),
         vec![
-            req_val("tired", l, 50i32)
+            req_val("tired", l, 50),
+            req_val("fruit", g, 0)
         ],
         vec![
             ef_eval("tired", |agent| (agent.f64("tired") + 20.0).typ()),
             ef_eval("food", |agent| (agent.f64("food") + 10.0).typ()),
             ef_eval("hunger", |agent| (agent.f64("hunger") + 5.0).typ()),
-            glo_ef_eval("GLOBAL: fruit", |_agent, world| (world.f64("GLOBAL: fruit") - 5.0).typ())
+            g_ef_eval("fruit", |_agent, world| (world.f64("fruit") - 5.0).typ())
+        ]
+    );
+
+    agent.action(
+        "plant",
+        cost_val(10.0),
+        vec![
+            req_val("tired", l, 50i32)
+        ],
+        vec![
+            ef_eval("tired", |agent| (agent.f64("tired") + 20.0).typ()),
+            ef_eval("hunger", |agent| (agent.f64("hunger") + 5.0).typ()),
+            g_ef_eval("fruit", |_agent, world| (world.f64("fruit") + 5.0).typ())
         ]
     );
 
@@ -64,28 +97,17 @@ fn main() {
         "sleep",
         cost_val(10.0),
         vec![
-            req_val("tired", g, 30i32)
+            req_val("tired", g, 20.0),
         ],
         vec![
             ef_eval("tired", |agent| (agent.f64("tired") - 30.0).typ()),
         ]
     );
+    // Automatically sets global and local fields
+    agent.build_fields(&world);
+    agent.simulate_priority_goal(&world);
 
-    println!("{world:?}");
-    println!("\nGOALS:{:?}", agent.goals);
-    println!("STATES:{:?}", agent.states);
-    println!("current goal: {}", agent.priority_goal());
 
-    // agent.simulate("eat");
-    // agent.simulate("sleep");
-    agent.simulate(&world,"forage");
-
-    // for i in 0..10 {
-    //     println!("\ndiscontentment with current state: {}", agent.h_score("REPLENISH"));
-    //     agent.simulate(&world, "forage");
-    //     agent.execute(&world, "forage");
-    // }
-
-    println!("discontentment with current state: {}", agent.h_score("REPLENISH"));
+    let thing = agent.clone();
 }
 
